@@ -5,29 +5,43 @@ class FriendRequestModel {
     // إرسال طلب صداقة
     static async sendFriendRequest(fromUser, toUser) {
         try {
+            // التحقق من صحة البيانات
+            if (!fromUser || !toUser) {
+                throw new Error('من فضلك قم بتوفير أسماء المستخدمين');
+            }
+
+            if (fromUser === toUser) {
+                throw new Error('لا يمكنك إرسال طلب صداقة لنفسك');
+            }
+
+            // التحقق من وجود المستخدم المستقبل
+            const targetUserExists = await this.checkUserExists(toUser);
+            if (!targetUserExists) {
+                throw new Error('المستخدم المطلوب غير موجود');
+            }
+
             // التحقق من وجود طلب سابق
             const existingRequest = await this.getExistingRequest(fromUser, toUser);
             if (existingRequest) {
-                throw new Error('Friend request already exists');
+                throw new Error('يوجد طلب صداقة بالفعل');
             }
 
             // التحقق من كونهما أصدقاء بالفعل
             const alreadyFriends = await this.areFriends(fromUser, toUser);
             if (alreadyFriends) {
-                throw new Error('Users are already friends');
+                throw new Error('أنتما أصدقاء بالفعل');
             }
 
-            // استخدام أسماء الأعمدة الصحيحة من قاعدة البيانات
             const sql = `
                 INSERT INTO friend_requests 
                 (from_user, to_user, status, created_at)
                 VALUES (?, ?, 'pending', NOW())
             `;
             
-            const result = await db.query(sql, [fromUser, toUser]);
+            const [result] = await db.query(sql, [fromUser, toUser]);
             
             return {
-                id: result.insertId || result[0]?.insertId,
+                id: result.insertId,
                 from_user: fromUser,
                 to_user: toUser,
                 status: 'pending',
@@ -39,22 +53,37 @@ class FriendRequestModel {
         }
     }
 
+    // التحقق من وجود المستخدم
+    static async checkUserExists(username) {
+        try {
+            const sql = 'SELECT username FROM users WHERE username = ?';
+            const [rows] = await db.query(sql, [username]);
+            return rows.length > 0;
+        } catch (error) {
+            console.error('Error checking user existence:', error);
+            throw error;
+        }
+    }
+
     // الحصول على طلبات الصداقة الواردة
     static async getIncomingRequests(username) {
         try {
             const sql = `
                 SELECT 
-                    id,
-                    from_user,
-                    to_user,
-                    status,
-                    created_at,
-                    updated_at
-                FROM friend_requests 
-                WHERE to_user = ? AND status = 'pending'
-                ORDER BY created_at DESC
+                    fr.id,
+                    fr.from_user,
+                    fr.to_user,
+                    fr.status,
+                    fr.created_at,
+                    fr.updated_at,
+                    u.name as from_user_name,
+                    u.avatar as from_user_avatar
+                FROM friend_requests fr
+                LEFT JOIN users u ON fr.from_user = u.username
+                WHERE fr.to_user = ? AND fr.status = 'pending'
+                ORDER BY fr.created_at DESC
             `;
-            const [rows] = await db.query(sql, params);
+            const [rows] = await db.query(sql, [username]);
             return rows;
         } catch (error) {
             console.error('Error in FriendRequestModel.getIncomingRequests:', error);
@@ -62,7 +91,7 @@ class FriendRequestModel {
         }
     }
 
-    // إضافة هذه الدالة المفقودة التي يبحث عنها السيرفر
+    // للتوافق مع الكود الموجود
     static async getPendingRequests(username) {
         return await this.getIncomingRequests(username);
     }
@@ -72,18 +101,22 @@ class FriendRequestModel {
         try {
             const sql = `
                 SELECT 
-                    id,
-                    from_user,
-                    to_user,
-                    status,
-                    created_at,
-                    updated_at
-                FROM friend_requests 
-                WHERE from_user = ? AND status = 'pending'
-                ORDER BY created_at DESC
+                    fr.id,
+                    fr.from_user,
+                    fr.to_user,
+                    fr.status,
+                    fr.created_at,
+                    fr.updated_at,
+                    u.name as to_user_name,
+                    u.avatar as to_user_avatar
+                FROM friend_requests fr
+                LEFT JOIN users u ON fr.to_user = u.username
+                WHERE fr.from_user = ? AND fr.status = 'pending'
+                ORDER BY fr.created_at DESC
             `;
             
-            return await db.query(sql, [username]);
+            const [rows] = await db.query(sql, [username]);
+            return rows;
         } catch (error) {
             console.error('Error in FriendRequestModel.getOutgoingRequests:', error);
             throw error;
@@ -95,17 +128,17 @@ class FriendRequestModel {
         try {
             // التحقق من صحة الاستجابة
             if (!['accepted', 'declined'].includes(response)) {
-                throw new Error('Invalid response. Must be "accepted" or "declined"');
+                throw new Error('استجابة غير صحيحة. يجب أن تكون "accepted" أو "declined"');
             }
 
             // الحصول على تفاصيل الطلب
             const request = await this.getRequestById(requestId);
             if (!request) {
-                throw new Error('Friend request not found');
+                throw new Error('طلب الصداقة غير موجود');
             }
 
             if (request.status !== 'pending') {
-                throw new Error('Friend request already processed');
+                throw new Error('تم التعامل مع طلب الصداقة بالفعل');
             }
 
             // تحديث حالة الطلب
@@ -138,8 +171,8 @@ class FriendRequestModel {
     static async getRequestById(requestId) {
         try {
             const sql = 'SELECT * FROM friend_requests WHERE id = ?';
-            const requests = await db.query(sql, [requestId]);
-            return requests[0] || null;
+            const [rows] = await db.query(sql, [requestId]);
+            return rows[0] || null;
         } catch (error) {
             console.error('Error in FriendRequestModel.getRequestById:', error);
             throw error;
@@ -155,8 +188,8 @@ class FriendRequestModel {
                 AND status = 'pending'
             `;
             
-            const requests = await db.query(sql, [fromUser, toUser, toUser, fromUser]);
-            return requests[0] || null;
+            const [rows] = await db.query(sql, [fromUser, toUser, toUser, fromUser]);
+            return rows[0] || null;
         } catch (error) {
             console.error('Error in FriendRequestModel.getExistingRequest:', error);
             throw error;
@@ -171,8 +204,8 @@ class FriendRequestModel {
                 WHERE (user1 = ? AND user2 = ?) OR (user1 = ? AND user2 = ?)
             `;
             
-            const friends = await db.query(sql, [user1, user2, user2, user1]);
-            return friends.length > 0;
+            const [rows] = await db.query(sql, [user1, user2, user2, user1]);
+            return rows.length > 0;
         } catch (error) {
             console.error('Error in FriendRequestModel.areFriends:', error);
             throw error;
@@ -182,17 +215,24 @@ class FriendRequestModel {
     // إضافة صداقة جديدة
     static async addFriendship(user1, user2) {
         try {
+            // ترتيب أسماء المستخدمين أبجدياً لتجنب التكرار
+            const [sortedUser1, sortedUser2] = [user1, user2].sort();
+            
             const sql = `
                 INSERT INTO friends 
                 (user1, user2, created_at)
                 VALUES (?, ?, NOW())
             `;
             
-            // إضافة الصداقة من الاتجاهين
-            await db.query(sql, [user1, user2]);
+            await db.query(sql, [sortedUser1, sortedUser2]);
             
             return true;
         } catch (error) {
+            // التحقق من خطأ التكرار
+            if (error.code === 'ER_DUP_ENTRY') {
+                console.log('Friendship already exists');
+                return true;
+            }
             console.error('Error in FriendRequestModel.addFriendship:', error);
             throw error;
         }
@@ -204,16 +244,27 @@ class FriendRequestModel {
             const sql = `
                 SELECT 
                     CASE 
-                        WHEN user1 = ? THEN user2
-                        ELSE user1
+                        WHEN f.user1 = ? THEN f.user2
+                        ELSE f.user1
                     END as friend_username,
-                    created_at
-                FROM friends 
-                WHERE user1 = ? OR user2 = ?
-                ORDER BY created_at DESC
+                    f.created_at,
+                    u.name as friend_name,
+                    u.avatar as friend_avatar,
+                    u.online_status as friend_online,
+                    u.status as friend_status
+                FROM friends f
+                LEFT JOIN users u ON (
+                    CASE 
+                        WHEN f.user1 = ? THEN f.user2
+                        ELSE f.user1
+                    END = u.username
+                )
+                WHERE f.user1 = ? OR f.user2 = ?
+                ORDER BY f.created_at DESC
             `;
             
-            return await db.query(sql, [username, username, username]);
+            const [rows] = await db.query(sql, [username, username, username, username]);
+            return rows;
         } catch (error) {
             console.error('Error in FriendRequestModel.getFriendsList:', error);
             throw error;
@@ -228,7 +279,7 @@ class FriendRequestModel {
                 WHERE (user1 = ? AND user2 = ?) OR (user1 = ? AND user2 = ?)
             `;
             
-            const result = await db.query(sql, [user1, user2, user2, user1]);
+            const [result] = await db.query(sql, [user1, user2, user2, user1]);
             return result.affectedRows > 0;
         } catch (error) {
             console.error('Error in FriendRequestModel.removeFriend:', error);
@@ -240,7 +291,7 @@ class FriendRequestModel {
     static async deleteFriendRequest(requestId) {
         try {
             const sql = 'DELETE FROM friend_requests WHERE id = ?';
-            const result = await db.query(sql, [requestId]);
+            const [result] = await db.query(sql, [requestId]);
             return result.affectedRows > 0;
         } catch (error) {
             console.error('Error in FriendRequestModel.deleteFriendRequest:', error);
@@ -248,19 +299,17 @@ class FriendRequestModel {
         }
     }
 
-    // الحصول على جميع طلبات الصداقة (واردة وصادرة)
-    static async getAllRequests(username) {
+    // إلغاء طلب صداقة مرسل
+    static async cancelFriendRequest(fromUser, toUser) {
         try {
-            const incoming = await this.getIncomingRequests(username);
-            const outgoing = await this.getOutgoingRequests(username);
-            
-            return {
-                incoming: incoming,
-                outgoing: outgoing,
-                total: incoming.length + outgoing.length
-            };
+            const sql = `
+                DELETE FROM friend_requests 
+                WHERE from_user = ? AND to_user = ? AND status = 'pending'
+            `;
+            const [result] = await db.query(sql, [fromUser, toUser]);
+            return result.affectedRows > 0;
         } catch (error) {
-            console.error('Error in FriendRequestModel.getAllRequests:', error);
+            console.error('Error in FriendRequestModel.cancelFriendRequest:', error);
             throw error;
         }
     }
@@ -271,10 +320,12 @@ class FriendRequestModel {
             const sql = `
                 SELECT 
                     username,
-                    email,
+                    name,
+                    avatar,
+                    online_status,
                     created_at
                 FROM users 
-                WHERE username LIKE ? 
+                WHERE (username LIKE ? OR name LIKE ?)
                 AND username != ?
                 AND username NOT IN (
                     SELECT CASE 
@@ -291,8 +342,10 @@ class FriendRequestModel {
                 LIMIT ?
             `;
             
-            return await db.query(sql, [
-                `%${searchTerm}%`, 
+            const searchPattern = `%${searchTerm}%`;
+            const [rows] = await db.query(sql, [
+                searchPattern,
+                searchPattern,
                 currentUser, 
                 currentUser, 
                 currentUser, 
@@ -300,6 +353,7 @@ class FriendRequestModel {
                 currentUser, 
                 limit
             ]);
+            return rows;
         } catch (error) {
             console.error('Error in FriendRequestModel.searchUsers:', error);
             throw error;
@@ -333,8 +387,8 @@ class FriendRequestModel {
                 WHERE user1 = ? OR user2 = ?
             `;
             
-            const result = await db.query(sql, [username, username]);
-            return result[0].count;
+            const [rows] = await db.query(sql, [username, username]);
+            return rows[0].count;
         } catch (error) {
             console.error('Error in FriendRequestModel.getFriendsCount:', error);
             throw error;
@@ -350,8 +404,8 @@ class FriendRequestModel {
                 WHERE to_user = ? AND status = 'pending'
             `;
             
-            const result = await db.query(sql, [username]);
-            return result[0].count;
+            const [rows] = await db.query(sql, [username]);
+            return rows[0].count;
         } catch (error) {
             console.error('Error in FriendRequestModel.getPendingRequestsCount:', error);
             throw error;
@@ -367,8 +421,8 @@ class FriendRequestModel {
                 WHERE from_user = ? AND status = 'pending'
             `;
             
-            const result = await db.query(sql, [username]);
-            return result[0].count;
+            const [rows] = await db.query(sql, [username]);
+            return rows[0].count;
         } catch (error) {
             console.error('Error in FriendRequestModel.getSentRequestsCount:', error);
             throw error;
@@ -384,7 +438,7 @@ class FriendRequestModel {
                 AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)
             `;
             
-            const result = await db.query(sql, [daysOld]);
+            const [result] = await db.query(sql, [daysOld]);
             return result.affectedRows;
         } catch (error) {
             console.error('Error in FriendRequestModel.cleanupOldRequests:', error);
@@ -393,14 +447,31 @@ class FriendRequestModel {
     }
 
     // الحصول على الأصدقاء المتصلين حالياً
-    static async getOnlineFriends(username, onlineUsers = []) {
+    static async getOnlineFriends(username) {
         try {
-            const friends = await this.getFriendsList(username);
-            const onlineFriends = friends.filter(friend => 
-                onlineUsers.includes(friend.friend_username)
-            );
+            const sql = `
+                SELECT 
+                    CASE 
+                        WHEN f.user1 = ? THEN f.user2
+                        ELSE f.user1
+                    END as friend_username,
+                    u.name as friend_name,
+                    u.avatar as friend_avatar,
+                    u.online_status as friend_online,
+                    u.status as friend_status
+                FROM friends f
+                LEFT JOIN users u ON (
+                    CASE 
+                        WHEN f.user1 = ? THEN f.user2
+                        ELSE f.user1
+                    END = u.username
+                )
+                WHERE (f.user1 = ? OR f.user2 = ?) AND u.online_status = 1
+                ORDER BY f.created_at DESC
+            `;
             
-            return onlineFriends;
+            const [rows] = await db.query(sql, [username, username, username, username]);
+            return rows;
         } catch (error) {
             console.error('Error in FriendRequestModel.getOnlineFriends:', error);
             throw error;
@@ -417,10 +488,27 @@ class FriendRequestModel {
                 AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)
             `;
             
-            const result = await db.query(sql, [daysOld]);
+            const [result] = await db.query(sql, [daysOld]);
             return result.affectedRows;
         } catch (error) {
             console.error('Error in FriendRequestModel.expireOldRequests:', error);
+            throw error;
+        }
+    }
+
+    // تحديث حالة المستخدم أونلاين
+    static async updateUserOnlineStatus(username, isOnline) {
+        try {
+            const sql = `
+                UPDATE users 
+                SET online_status = ?, updated_at = NOW()
+                WHERE username = ?
+            `;
+            
+            const [result] = await db.query(sql, [isOnline ? 1 : 0, username]);
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Error updating user online status:', error);
             throw error;
         }
     }
