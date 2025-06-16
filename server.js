@@ -514,22 +514,30 @@ const handleSendFriendRequest = async (data, socket) => {
     try {
         const { from, to } = data;
         
+        // التحقق من البيانات المطلوبة
+        if (!from || !to) {
+            socket.emit('friendRequestSent', {
+                success: false,
+                message: 'من فضلك قم بتوفير أسماء المستخدمين'
+            });
+            return;
+        }
+        
         console.log(`Processing friend request from ${from} to ${to}`);
         
-        // Use your FriendRequestModel
         const result = await FriendRequestModel.sendFriendRequest(from, to);
         
         console.log('Friend request sent successfully:', result);
         
-        // Send confirmation to sender
+        // إرسال تأكيد للمرسل
         socket.emit('friendRequestSent', {
             success: true,
-            message: 'Friend request sent successfully',
+            message: 'تم إرسال طلب الصداقة بنجاح',
             requestId: result.id,
             to: to
         });
         
-        // Notify recipient if online
+        // إشعار المستقبل إذا كان متصل
         const targetSocket = findUserSocket(to);
         if (targetSocket) {
             targetSocket.emit('newFriendRequest', {
@@ -544,7 +552,7 @@ const handleSendFriendRequest = async (data, socket) => {
         
         socket.emit('friendRequestSent', {
             success: false,
-            message: error.message || 'Failed to send friend request'
+            message: error.message || 'فشل في إرسال طلب الصداقة'
         });
     }
 };
@@ -553,32 +561,40 @@ const handleRespondToFriendRequest = async (data, socket) => {
     try {
         const { requestId, response, username } = data;
         
+        if (!requestId || !response) {
+            socket.emit('friendRequestResponded', {
+                success: false,
+                message: 'بيانات غير مكتملة'
+            });
+            return;
+        }
+        
         console.log(`Processing friend request response: ${response} for request ${requestId}`);
         
-        // Use your FriendRequestModel.respondToRequest
         const result = await FriendRequestModel.respondToRequest(requestId, response);
         
         console.log('Friend request response processed:', result);
         
-        // Send confirmation to responder
+        // إرسال تأكيد للمستجيب
         socket.emit('friendRequestResponded', {
             success: true,
-            message: `Friend request ${response} successfully`,
+            message: `تم ${response === 'accepted' ? 'قبول' : 'رفض'} طلب الصداقة بنجاح`,
             requestId: requestId,
             response: response
         });
         
-        // Notify original sender
+        // إشعار المرسل الأصلي
         const senderSocket = findUserSocket(result.fromUser);
         if (senderSocket) {
             senderSocket.emit('friendRequestUpdate', {
                 requestId: requestId,
                 response: response,
-                from: result.toUser
+                from: result.toUser,
+                message: `تم ${response === 'accepted' ? 'قبول' : 'رفض'} طلب الصداقة من ${result.toUser}`
             });
         }
         
-        // If accepted, update friends lists for both users
+        // إذا تم القبول، تحديث قوائم الأصدقاء لكلا المستخدمين
         if (response === 'accepted') {
             await updateFriendsListForUser(result.fromUser);
             await updateFriendsListForUser(result.toUser);
@@ -589,7 +605,7 @@ const handleRespondToFriendRequest = async (data, socket) => {
         
         socket.emit('friendRequestResponded', {
             success: false,
-            message: error.message || 'Failed to respond to friend request'
+            message: error.message || 'فشل في الرد على طلب الصداقة'
         });
     }
 };
@@ -602,13 +618,17 @@ const handleGetPendingRequests = async (data, socket) => {
         if (!username) {
             socket.emit('pendingRequests', {
                 success: false,
-                message: 'Username is required',
+                message: 'اسم المستخدم مطلوب',
                 requests: []
             });
             return;
         }
         
+        console.log(`Getting pending requests for ${username}`);
+        
         const requests = await FriendRequestModel.getIncomingRequests(username);
+        
+        console.log(`Found ${requests.length} pending requests for ${username}`);
         
         socket.emit('pendingRequests', {
             success: true,
@@ -645,14 +665,13 @@ async function updateFriendsListForUser(username) {
 // الحصول على قائمة الأصدقاء
 const handleGetFriendsList = async (data, socket) => {
     try {
-        // Fix: Extract username properly from data or socket
         const username = data?.username || socket.username;
         
         if (!username) {
             console.error('No username provided for getFriendsList');
             socket.emit('friendsList', {
                 success: false,
-                message: 'Username is required',
+                message: 'اسم المستخدم مطلوب',
                 friends: []
             });
             return;
@@ -660,7 +679,6 @@ const handleGetFriendsList = async (data, socket) => {
         
         console.log(`Getting friends list for ${username}`);
         
-        // استخدام قاعدة البيانات
         const friends = await FriendRequestModel.getFriendsList(username);
         
         console.log(`Found ${friends.length} friends for ${username}`);
@@ -681,42 +699,58 @@ const handleGetFriendsList = async (data, socket) => {
     }
 };
 
-function handleRemoveFriend({ username1, username2 }, callback) {
-  try {
-    if (!username1 || !username2) {
-      callback?.({ success: false, error: "Missing username" });
-      return;
+const handleRemoveFriend = async (data, socket) => {
+    try {
+        const { username1, username2 } = data;
+        
+        if (!username1 || !username2) {
+            socket.emit('friendRemoved', {
+                success: false,
+                message: 'بيانات غير مكتملة'
+            });
+            return;
+        }
+        
+        console.log(`Removing friendship between ${username1} and ${username2}`);
+        
+        const removed = await FriendRequestModel.removeFriend(username1, username2);
+        
+        if (removed) {
+            // إشعار كلا المستخدمين
+            socket.emit('friendRemoved', {
+                success: true,
+                message: 'تم حذف الصديق بنجاح',
+                removedFriend: username2
+            });
+            
+            const friendSocket = findUserSocket(username2);
+            if (friendSocket) {
+                friendSocket.emit('friendRemoved', {
+                    success: true,
+                    message: `تم حذفك من قائمة أصدقاء ${username1}`,
+                    removedFriend: username1
+                });
+            }
+            
+            // تحديث قوائم الأصدقاء
+            await updateFriendsListForUser(username1);
+            await updateFriendsListForUser(username2);
+            
+        } else {
+            socket.emit('friendRemoved', {
+                success: false,
+                message: 'فشل في حذف الصديق'
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error removing friend:', error);
+        socket.emit('friendRemoved', {
+            success: false,
+            message: error.message
+        });
     }
-
-    // Remove from both users' friend lists
-    const user1Friends = userFriends.get(username1) || [];
-    const user2Friends = userFriends.get(username2) || [];
-
-    const updatedUser1Friends = user1Friends.filter(friend => friend.username !== username2);
-    const updatedUser2Friends = user2Friends.filter(friend => friend.username !== username1);
-
-    userFriends.set(username1, updatedUser1Friends);
-    userFriends.set(username2, updatedUser2Friends);
-
-    // Notify both users
-    const user1Socket = findUserSocket(username1);
-    const user2Socket = findUserSocket(username2);
-
-    if (user1Socket) {
-      user1Socket.emit('friendListUpdate', updatedUser1Friends);
-    }
-
-    if (user2Socket) {
-      user2Socket.emit('friendListUpdate', updatedUser2Friends);
-      user2Socket.emit('friendRemoved', { username: username1 });
-    }
-
-    callback?.({ success: true });
-  } catch (error) {
-    console.error("Remove friend error:", error);
-    callback?.({ success: false, error: "Failed to remove friend" });
-  }
-}
+};
 
 function handleUpdateUserStatus({ username, status }) {
   try {
